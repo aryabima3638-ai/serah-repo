@@ -1,0 +1,66 @@
+name: Build Flutter
+run-name: Build ${{ inputs.tag }} (${{ inputs.build_type }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag yang berisi source ZIP
+        required: true
+      build_type:
+        description: release atau debug
+        default: release
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bebaskan ruang disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          df -h /
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.8'
+          channel: stable
+
+      - name: Download source ZIP from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p source
+          gh release download "${{ inputs.tag }}" --repo ${{ github.repository }} --pattern "*.zip" --dir source
+          cd source && unzip -q -o ./*.zip
+          # cari pubspec.yaml paling dangkal (abaikan __MACOSX & folder tersembunyi)
+          PUB=$(find . -name pubspec.yaml -not -path '*/__MACOSX/*' -not -path '*/.*' -not -path '*/ephemeral/*' -not -path '*/example/*' | awk '{print length, $0}' | sort -n | head -1 | cut -d' ' -f2-)
+          if [ -z "$PUB" ]; then
+            echo "::error::pubspec.yaml tidak ditemukan di dalam ZIP. Zip folder project Flutter yang ada pubspec.yaml."
+            exit 1
+          fi
+          ROOT=$(cd "$(dirname "$PUB")" && pwd)
+          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "Project root: $ROOT"
+
+      - name: Flutter build
+        run: |
+          cd "$PROJECT_ROOT"
+          flutter pub get
+          if [ "${{ inputs.build_type }}" = "debug" ]; then
+            flutter build apk --debug
+          else
+            flutter build apk --release
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ inputs.build_type }}
+          path: ${{ env.PROJECT_ROOT }}/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+          retention-days: 1
